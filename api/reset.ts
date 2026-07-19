@@ -66,7 +66,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const embResponse = await ai.models.embedContent({
-      model: 'gemini-embedding-2-preview',
+      model: 'text-embedding-004',
       contents: texts,
     });
 
