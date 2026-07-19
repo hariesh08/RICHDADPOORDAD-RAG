@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabase } from './lib/supabase';
-import { getEmbeddings } from './lib/gemini';
-import { DEFAULT_BOOK_CHUNKS } from './lib/chunks';
+import { getSupabase } from '../lib/supabase';
+import { getEmbeddings } from '../lib/gemini';
+import { DEFAULT_BOOK_CHUNKS } from '../lib/chunks';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -9,6 +9,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const supabase = getSupabase();
+
     const { count } = await supabase
       .from('chunks')
       .select('*', { count: 'exact', head: true })

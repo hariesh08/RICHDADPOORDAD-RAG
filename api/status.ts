@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabase } from './lib/supabase';
+import { getSupabase } from '../lib/supabase';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
@@ -7,6 +7,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const supabase = getSupabase();
     const { count } = await supabase
       .from('chunks')
       .select('*', { count: 'exact', head: true });

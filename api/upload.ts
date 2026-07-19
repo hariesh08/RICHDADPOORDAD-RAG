@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { supabase } from './lib/supabase';
-import { getEmbeddings } from './lib/gemini';
+import { getSupabase } from '../lib/supabase';
+import { getEmbeddings } from '../lib/gemini';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -64,6 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       embedding: JSON.stringify(embeddings[i]),
     }));
 
+    const supabase = getSupabase();
     const { error } = await supabase.from('chunks').insert(rows);
     if (error) throw error;
 
