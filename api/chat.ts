@@ -112,7 +112,12 @@ Provide your detailed RAG response here:`;
 
     const answerText = response.text || "I couldn't find that information in the provided book.";
 
-    const topSimilarities = retrieved.slice(0, 3).map((r: any) => r.similarity);
+    const sanitizeSimilarity = (val: any): number => {
+      const num = Number(val);
+      return Number.isFinite(num) ? num : 0;
+    };
+
+    const topSimilarities = retrieved.slice(0, 3).map((r: any) => sanitizeSimilarity(r.similarity));
     const confidenceScore =
       topSimilarities.length > 0
         ? topSimilarities.reduce((a: number, b: number) => a + b, 0) / topSimilarities.length
@@ -120,13 +125,13 @@ Provide your detailed RAG response here:`;
 
     return res.json({
       answer: answerText,
-      sources: retrieved.map((r: any) => ({
-        id: r.id,
+      sources: retrieved.map((r: any, idx: number) => ({
+        id: r.id || `chunk-${idx}`,
         text: r.text,
         pageNumber: r.page_number,
         chapter: r.chapter || null,
         source: r.source,
-        similarity: r.similarity,
+        similarity: sanitizeSimilarity(r.similarity),
       })),
       confidenceScore: parseFloat(confidenceScore.toFixed(3)),
     });

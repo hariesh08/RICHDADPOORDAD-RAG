@@ -68,7 +68,7 @@ export default function SourceViewer({ sources, confidenceScore, isDarkMode }: S
                   <span className={`px-1.5 py-0.5 rounded font-semibold transition-colors ${
                     isDarkMode ? 'bg-white/10 text-white' : 'bg-black/5 text-black'
                   }`}>Page {src.pageNumber}</span>
-                  <span className="text-gray-400">Score: {src.similarity.toFixed(3)}</span>
+                  <span className="text-gray-400">Score: {(typeof src.similarity === 'number' && isFinite(src.similarity) ? src.similarity : 0).toFixed(3)}</span>
                 </div>
               </div>
 

@@ -388,7 +388,7 @@ export default function App() {
                             }`}>
                               <div className="flex justify-between items-center mb-2">
                                 <span className="text-[10px] font-bold text-gray-500 font-mono">CHUNK #{sIdx + 1}</span>
-                                <span className="text-[10px] text-gray-400 font-mono">Score: {src.similarity.toFixed(2)}</span>
+                                <span className="text-[10px] text-gray-400 font-mono">Score: {(typeof src.similarity === 'number' && isFinite(src.similarity) ? src.similarity : 0).toFixed(2)}</span>
                               </div>
                               <p className={`text-[11px] line-clamp-3 leading-snug italic transition-colors ${
                                 isDarkMode ? 'text-gray-400' : 'text-gray-600'
