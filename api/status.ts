@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getSupabase } from '../lib/supabase';
+import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
@@ -7,12 +7,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const supabase = getSupabase();
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!url || !key) {
+      return res.status(500).json({ error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY' });
+    }
+
+    const supabase = createClient(url, key);
     const { count } = await supabase
       .from('chunks')
       .select('*', { count: 'exact', head: true });
-
-    const hasApiKey = !!process.env.GEMINI_API_KEY;
 
     return res.json({
       status: 'ready',
@@ -21,7 +25,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       chunksCount: count || 0,
       embeddingModel: 'gemini-embedding-2-preview',
       llmModel: 'gemini-3.5-flash',
-      hasApiKey,
+      hasApiKey: !!process.env.GEMINI_API_KEY,
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

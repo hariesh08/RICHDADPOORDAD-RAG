@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getSupabase } from '../lib/supabase';
-import { getEmbeddings } from '../lib/gemini';
+import { createClient } from '@supabase/supabase-js';
+import { GoogleGenAI } from '@google/genai';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -8,6 +8,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const url = process.env.SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!url || !key || !geminiKey) {
+      return res.status(500).json({ error: 'Missing environment variables' });
+    }
+
     const { fileBase64, fileName } = req.body;
     if (!fileBase64) {
       return res.status(400).json({ error: 'Missing fileBase64 in request body.' });
@@ -20,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const numPages = pdfData.numpages;
 
     if (!pdfText || pdfText.trim().length === 0) {
-      return res.status(400).json({ error: 'Could not extract any text from the provided PDF.' });
+      return res.status(400).json({ error: 'Could not extract text from PDF.' });
     }
 
     const chunkSize = 700;
@@ -52,8 +59,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       index += chunkSize - chunkOverlap;
     }
 
-    const chunkTextsForEmbedding = chunks.map((c) => `Page ${c.page_number}: ${c.text}`);
-    const embeddings = await getEmbeddings(chunkTextsForEmbedding);
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const chunkTexts = chunks.map((c) => `Page ${c.page_number}: ${c.text}`);
+
+    const embResponse = await ai.models.embedContent({
+      model: 'gemini-embedding-2-preview',
+      contents: chunkTexts,
+    });
+
+    const embeddings: number[][] = [];
+    if (embResponse.embeddings) {
+      for (const emb of embResponse.embeddings) {
+        if (emb.values) embeddings.push(emb.values);
+      }
+    }
 
     const rows = chunks.map((chunk, i) => ({
       id: chunk.id,
@@ -61,21 +80,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       page_number: chunk.page_number,
       source: chunk.source,
       chapter: null,
-      embedding: JSON.stringify(embeddings[i]),
+      embedding: JSON.stringify(embeddings[i] || new Array(768).fill(0)),
     }));
 
-    const supabase = getSupabase();
+    const supabase = createClient(url, key);
     const { error } = await supabase.from('chunks').insert(rows);
     if (error) throw error;
 
     return res.json({
       success: true,
-      message: `Successfully ingested and embedded ${chunks.length} chunks from ${numPages} pages.`,
+      message: `Ingested ${chunks.length} chunks from ${numPages} pages.`,
       bookName: fileName || 'Uploaded PDF',
       totalPages: numPages,
       chunksCount: chunks.length,
     });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'An error occurred while ingesting the PDF.' });
+    return res.status(500).json({ error: err.message || 'Upload failed.' });
   }
 }
