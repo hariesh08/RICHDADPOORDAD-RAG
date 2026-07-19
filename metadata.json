@@ -1,6 +1,0 @@
-{
-  "name": "Rich Dad Poor Dad RAG Chatbot",
-  "description": "An advanced Retrieval-Augmented Generation (RAG) chatbot that answers questions using information retrieved from the book 'Rich Dad Poor Dad'.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

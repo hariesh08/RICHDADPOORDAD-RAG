@@ -40,13 +40,13 @@ function getGeminiClient(): GoogleGenAI {
   if (!aiClient) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error("GEMINI_API_KEY is not set. Please add it in the Secrets panel (Settings > Secrets).");
+      throw new Error("GEMINI_API_KEY is not set. Please add it to your .env.local file.");
     }
     aiClient = new GoogleGenAI({
       apiKey,
       httpOptions: {
         headers: {
-          'User-Agent': 'aistudio-build',
+          'User-Agent': 'rich-dad-rag',
         }
       }
     });
