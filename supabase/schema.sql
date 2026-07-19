@@ -7,11 +7,11 @@ CREATE TABLE chunks (
   page_number INTEGER NOT NULL,
   source TEXT NOT NULL DEFAULT 'Rich Dad Poor Dad',
   chapter TEXT,
-  embedding vector(3072)
+  embedding vector(768)
 );
 
 CREATE OR REPLACE FUNCTION search_chunks(
-  query_embedding vector(3072),
+  query_embedding vector(768),
   match_count int DEFAULT 5
 )
 RETURNS TABLE (
