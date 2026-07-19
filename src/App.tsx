@@ -10,8 +10,8 @@ import { Message, SystemStatus } from './types';
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [topK, setTopK] = useState(0);
-  const [temperature, setTemperature] = useState(0.0);
+  const [topK, setTopK] = useState(5);
+  const [temperature, setTemperature] = useState(0.2);
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
