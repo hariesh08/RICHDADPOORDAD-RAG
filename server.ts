@@ -1,0 +1,540 @@
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdf = require('pdf-parse');
+import { createServer as createViteServer } from 'vite';
+
+dotenv.config();
+
+const app = express();
+const PORT = 3000;
+
+// Increase request size limits for PDF upload
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Types
+interface Chunk {
+  id: string;
+  text: string;
+  pageNumber: number;
+  metadata: {
+    source: string;
+    chapter?: string;
+  };
+  embedding?: number[];
+}
+
+// Active Vector Store
+let activeVectorStore: Chunk[] = [];
+let sourceBookName = "Rich Dad Poor Dad (Default Edition)";
+let totalPagesCount = 188;
+
+// Lazy initialization of the GoogleGenAI client
+let aiClient: GoogleGenAI | null = null;
+function getGeminiClient(): GoogleGenAI {
+  if (!aiClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not set. Please add it in the Secrets panel (Settings > Secrets).");
+    }
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+  }
+  return aiClient;
+}
+
+// Default Rich Dad Poor Dad Book Chunks (Rich context to make the RAG fully operational out of the box)
+const defaultBookChunks: Chunk[] = [
+  {
+    id: "chunk-1",
+    pageNumber: 11,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 1: The Rich Don't Work for Money" },
+    text: "The poor and the middle class work for money. The rich have money work for them. Robert Kiyosaki's rich dad explained that most people are driven by two emotions: fear and greed. First, the fear of being without money motivates them to work hard, and then once they get a paycheck, greed or desire starts them thinking about all the wonderful things money can buy. This sets up the pattern of the Rat Race: get up, go to work, pay bills, get up, go to work, pay bills. Their lives are run by fear and desire, and they refuse to use their brains to think for themselves."
+  },
+  {
+    id: "chunk-2",
+    pageNumber: 18,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 1: The Rich Don't Work for Money" },
+    text: "Rich dad taught Robert and Mike that money is an illusion, just like the carrot in front of the donkey. It is only because of fear and greed that the illusion of money is held together by millions of people who believe that money is real. Money is actually made up. The rich don't work for money because they understand how to create assets that generate money even when they are asleep. If you work for money, you give the power to your employer. If money works for you, you keep the power and control it."
+  },
+  {
+    id: "chunk-3",
+    pageNumber: 35,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 2: Why Teach Financial Literacy?" },
+    text: "Rule Number One: You must know the difference between an asset and a liability, and buy assets. If you want to be rich, this is all you need to know. It is Rule No. 1. It is the only rule. Rich people acquire assets. Poor and middle class acquire liabilities that they think are assets. An asset is something that puts money in my pocket, whether I work or not. A liability is something that takes money out of my pocket. The lack of financial literacy is the core reason for financial struggle."
+  },
+  {
+    id: "chunk-4",
+    pageNumber: 42,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 2: Why Teach Financial Literacy?" },
+    text: "A house is a liability, not an asset, for most people. Robert Kiyosaki explains that a house takes money out of your pocket through mortgage payments, property taxes, insurance, maintenance, and utilities. If you buy a house that is too expensive, you lose the opportunity to invest that cash flow in income-generating assets. Although a house can appreciate, it does not put cash in your pocket monthly; instead, it requires constant cash outflows. Therefore, Kiyosaki considers a primary residence to be a liability, while an investment property that generates net rental income is an asset."
+  },
+  {
+    id: "chunk-5",
+    pageNumber: 48,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 2: Why Teach Financial Literacy?" },
+    text: "The financial difference between the rich, the poor, and the middle class is illustrated by cash flow patterns. The cash flow of a poor person consists only of an income (job) which is immediately spent on expenses (food, rent, clothes, taxes). They have no assets or liabilities. The cash flow of a middle-class person consists of income (job) which goes to pay for liabilities (mortgages, car loans, credit cards) and expenses. The cash flow of a rich person is generated by their asset column (stocks, bonds, real estate, intellectual property), which provides passive income that exceeds their expenses, allowing them to reinvest in more assets."
+  },
+  {
+    id: "chunk-6",
+    pageNumber: 71,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 3: Mind Your Own Business" },
+    text: "To become financially secure, a person needs to mind their own business. Your business revolves around your asset column, as opposed to your profession, which revolves around your income column. Financial struggle is often the result of people working all their lives for someone else. Many people will have nothing at the end of their working days. Minding your own business means keeping your asset column strong. Once a dollar goes into it, never let it come out. Think of it as your employee working 24 hours a day to build wealth."
+  },
+  {
+    id: "chunk-7",
+    pageNumber: 74,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 3: Mind Your Own Business" },
+    text: "What kind of assets should you acquire? Robert Kiyosaki suggests several categories of real assets: 1. Businesses that do not require my presence (I own them, but they are managed or run by other people). 2. Stocks. 3. Bonds. 4. Income-generating real estate. 5. Notes (promissory notes/IOMs). 6. Royalties from intellectual property such as music, scripts, patents. 7. Anything else that has value, produces income or appreciates, and has a ready market."
+  },
+  {
+    id: "chunk-8",
+    pageNumber: 83,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 4: The History of Taxes and the Power of Corporations" },
+    text: "The rich are not taxed as heavily as the middle class because they understand the legal power of corporations. A corporation is not a physical thing; it is merely a file folder with some legal documents in it, sitting in an attorney's office. A corporation offers massive tax advantages. While an employee earns, gets taxed, and then tries to live on what is left, a corporation earns, spends everything it can (including business expenses, travel, cars), and is only taxed on what is left. This is one of the biggest legal tax loopholes used by the wealthy."
+  },
+  {
+    id: "chunk-9",
+    pageNumber: 89,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 4: The History of Taxes and the Power of Corporations" },
+    text: "Financial IQ is made up of knowledge from four broad areas: 1. Accounting: Financial literacy, or the ability to read and understand financial statements. 2. Investing: The science of money making money, involving strategies and formulas. 3. Understanding markets: The science of supply and demand, matching an investment with market conditions. 4. The Law: Understanding tax advantages and protection from lawsuits. Specifically, using corporations to shield assets and reduce tax liabilities legally."
+  },
+  {
+    id: "chunk-10",
+    pageNumber: 99,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 5: The Rich Invent Money" },
+    text: "Often in the real world, it's not the smart who get ahead, but the bold. Financial genius requires both technical knowledge and courage. Most people are so afraid of losing that they lose. They play the game of life too safely. Robert Kiyosaki explains that financial intelligence is simply having more options. If the opportunities aren't coming your way, what else can you do to improve your financial position? If an opportunity falls in your lap and you have no money, and the bank won't talk to you, what else can you do to get that opportunity to work for you? The rich invent money by finding creative solutions to financial problems."
+  },
+  {
+    id: "chunk-11",
+    pageNumber: 106,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 5: The Rich Invent Money" },
+    text: "There are two types of investors: 1. The most common type is those who buy a packaged investment from a retail outlet (real estate company, stockbroker, or financial planner). 2. The second type is investors who create investments. This investor assembles the deal, finds smart people, and coordinates them. To be the second type, you must develop three key skills: 1. How to find an opportunity that everyone else missed. 2. How to raise money (without going to standard banks). 3. How to organize smart people (hiring people who are smarter than you)."
+  },
+  {
+    id: "chunk-12",
+    pageNumber: 127,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 6: Work to Learn—Don't Work for Money" },
+    text: "Robert Kiyosaki recommends that young people seek work for what they will learn, more than what they will earn. Look ahead at what skills you want to acquire before choosing a specific profession. Kiyosaki's educated dad (poor dad) believed in specialization and job security (getting a PhD, becoming a specialist). In contrast, rich dad recommended that Robert learn a little about a lot. He worked in different departments at his rich dad's companies to understand sales, shipping, marketing, and accounting. The most important specialized skill is sales and marketing: the ability to sell is the single most important skill for personal wealth."
+  },
+  {
+    id: "chunk-13",
+    pageNumber: 133,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Lesson 6: Work to Learn—Don't Work for Money" },
+    text: "The primary management skills necessary for financial success are: 1. Management of cash flow. 2. Management of systems (including yourself, your family, and your business). 3. Management of people. Furthermore, the most important communication skills are selling and understanding marketing. The ability to sell—to communicate to another human being, be it a customer, employee, boss, spouse, or child—is the base skill of personal success."
+  },
+  {
+    id: "chunk-14",
+    pageNumber: 147,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Overcoming Obstacles" },
+    text: "Once people have become financially literate, they may still face obstacles to financial independence. The five primary obstacles are: 1. Fear of losing money. 2. Cynicism or doubt. 3. Laziness (often disguised as staying busy). 4. Bad habits. 5. Arrogance. For fear, rich dad said: 'If you hate risk and worry, start early.' Texas has a saying: 'Everyone wants to go to heaven, but no one wants to die.' Everyone wants to be rich, but most people are terrified of losing money. The rich handle failure differently; they use failure to inspire them to win."
+  },
+  {
+    id: "chunk-15",
+    pageNumber: 153,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Overcoming Obstacles - Cynicism" },
+    text: "Doubt and cynicism keep most people poor. Cynics complain, while winners analyze. A cynic will say, 'What if the market crashes?' or 'What if there is a tenant who won't pay?' These doubts paralyze them. Rich dad taught that 'Chicken Littles' run around shouting 'The sky is falling!' and their noise is heard by everyone. Winners analyze the real risks and find opportunities. For example, during real estate down cycles, cynics are too scared to buy, while winners realize it's a clearance sale and acquire properties at a discount."
+  },
+  {
+    id: "chunk-16",
+    pageNumber: 158,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Overcoming Obstacles - Laziness" },
+    text: "Busy people are often the most lazy. They stay busy at work, with friends, or watching TV to avoid confronting their underlying financial problems. This is a form of emotional laziness. How do you cure laziness? The cure is a little greed. Ask yourself, 'What's in it for me?' and 'How can I afford it?' instead of saying 'I can't afford it.' The words 'I can't afford it' shut down your brain. The question 'How can I afford it?' opens up your mind, forcing it to think and create solutions."
+  },
+  {
+    id: "chunk-17",
+    pageNumber: 161,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "Overcoming Obstacles - Bad Habits & Arrogance" },
+    text: "Our lives are shaped more by our habits than by our education. A key habit of the rich is paying themselves first. Most people get their paycheck and pay their bills first (landlord, tax collector, credit cards), leaving nothing for savings or investments. The rich pay themselves first—reinvesting in their assets—and use the pressure of unpaid creditors to motivate them to find creative ways to generate more income. Arrogance is also an obstacle; it is ego plus ignorance. When you are arrogant, you believe what you do not know is unimportant."
+  },
+  {
+    id: "chunk-18",
+    pageNumber: 167,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "10 Steps to Awaken Your Financial Genius" },
+    text: "Step 1: Find a Reason Greater than Reality (The Power of Spirit). If you don't have a strong reason ('want' and 'don't want'), the road ahead is too tough. Step 2: Make Daily Choices (The Power of Choice). We choose our habits and what we put in our heads. Invest in your education first. Step 3: Choose Friends Carefully (The Power of Association). Learn from both wealthy friends (how they make money) and struggling friends (what not to do). Step 4: Master a Formula, then Learn a New One (The Power of Rapid Learning). Be careful what you study because you become what you put in your mind."
+  },
+  {
+    id: "chunk-19",
+    pageNumber: 174,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "10 Steps to Awaken Your Financial Genius - Continued" },
+    text: "Step 5: Pay Yourself First (The Power of Self-Discipline). If you cannot control yourself, do not try to get rich. Keep your expenses low and build assets. Step 6: Pay Your Brokers Well (The Power of Good Advice). Professional brokers provide valuable information and save you time. Their commissions are small compared to the money they make you. Step 7: Be an Indian Giver (The Power of Getting Something for Nothing). Look for investments with a quick return of capital, while keeping a piece of the asset for free (e.g., getting your seed capital back in a year and keeping stock options)."
+  },
+  {
+    id: "chunk-20",
+    pageNumber: 181,
+    metadata: { source: "Rich Dad Poor Dad", chapter: "10 Steps to Awaken Your Financial Genius - Continued" },
+    text: "Step 8: Use Assets to Buy Luxuries (The Power of Focus). Do not buy luxuries on credit. If you want a nice car, first invest in assets (like real estate or stocks) until they generate enough cash flow to pay for the car. This builds financial discipline. Step 9: Choose Heroes (The Power of Myth). Emulate heroes like Warren Buffett or Donald Trump to make investing seem easy. Step 10: Teach and You Shall Receive (The Power of Giving). If you want money, love, or sales, first give them away. Generosity returns tenfold."
+  }
+];
+
+// Cache for Embeddings of default chunks
+let defaultChunksWithEmbeddings: Chunk[] = [];
+
+// Cosine similarity helper
+function cosineSimilarity(vecA: number[], vecB: number[]): number {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  const len = Math.min(vecA.length, vecB.length);
+  for (let i = 0; i < len; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// Generate Embeddings using Gemini API
+async function getEmbeddings(texts: string[]): Promise<number[][]> {
+  const ai = getGeminiClient();
+  const embeddings: number[][] = [];
+  const batchSize = 20;
+
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize);
+    try {
+      const response = await ai.models.embedContent({
+        model: 'gemini-embedding-2-preview',
+        contents: batch,
+      });
+
+      if (response.embeddings) {
+        for (const emb of response.embeddings) {
+          if (emb.values) {
+            embeddings.push(emb.values);
+          }
+        }
+      } else {
+        throw new Error("No embedding values found in Gemini API response.");
+      }
+    } catch (err: any) {
+      console.error(`Error generating embeddings for batch starting at ${i}:`, err);
+      // Fallback: Fill with dummy vector if API fails (handles key-less startup gracefully)
+      for (let j = 0; j < batch.length; j++) {
+        embeddings.push(new Array(768).fill(0));
+      }
+    }
+  }
+  return embeddings;
+}
+
+// Initialize active vector store with default chunks and their embeddings
+async function initializeDefaultStore() {
+  console.log("Initializing default vector store for Rich Dad Poor Dad...");
+  try {
+    if (defaultChunksWithEmbeddings.length > 0) {
+      activeVectorStore = [...defaultChunksWithEmbeddings];
+      sourceBookName = "Rich Dad Poor Dad (Default Edition)";
+      totalPagesCount = 188;
+      console.log("Loaded default chunks from cache!");
+      return;
+    }
+
+    // Generate embeddings if not cached
+    const texts = defaultBookChunks.map(c => `${c.metadata.chapter} (Page ${c.pageNumber}): ${c.text}`);
+    const embeddings = await getEmbeddings(texts);
+    
+    defaultChunksWithEmbeddings = defaultBookChunks.map((chunk, index) => ({
+      ...chunk,
+      embedding: embeddings[index]
+    }));
+
+    activeVectorStore = [...defaultChunksWithEmbeddings];
+    sourceBookName = "Rich Dad Poor Dad (Default Edition)";
+    totalPagesCount = 188;
+    console.log(`Successfully embedded and initialized ${activeVectorStore.length} default chunks!`);
+  } catch (err) {
+    console.error("Failed to generate default embeddings (likely due to missing GEMINI_API_KEY). Falling back to non-embedded default state.", err);
+    // If embedding fails, load chunks without embeddings (the similarity search will fall back to keyword matching or return dummy scores)
+    activeVectorStore = defaultBookChunks.map(c => ({ ...c, embedding: new Array(768).fill(0) }));
+    sourceBookName = "Rich Dad Poor Dad (Default Edition)";
+    totalPagesCount = 188;
+  }
+}
+
+// Call on startup
+initializeDefaultStore().catch(console.error);
+
+// API Routes
+
+// 1. Get current status/info
+app.get('/api/status', (req, res) => {
+  res.json({
+    status: 'ready',
+    bookName: sourceBookName,
+    totalPages: totalPagesCount,
+    chunksCount: activeVectorStore.length,
+    embeddingModel: 'gemini-embedding-2-preview',
+    llmModel: 'gemini-3.5-flash',
+    hasApiKey: !!process.env.GEMINI_API_KEY
+  });
+});
+
+// 2. Reset vector store to default Rich Dad Poor Dad book
+app.post('/api/reset', async (req, res) => {
+  try {
+    await initializeDefaultStore();
+    res.json({
+      success: true,
+      message: "Reset vector store to default 'Rich Dad Poor Dad' chunks.",
+      chunksCount: activeVectorStore.length,
+      bookName: sourceBookName,
+      totalPages: totalPagesCount
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to reset vector store." });
+  }
+});
+
+// 3. Upload and ingest custom PDF
+app.post('/api/upload', async (req, res) => {
+  try {
+    const { fileBase64, fileName } = req.body;
+    if (!fileBase64) {
+      return res.status(400).json({ error: "Missing fileBase64 in request body." });
+    }
+
+    console.log(`Ingesting PDF file: ${fileName || 'unnamed.pdf'}`);
+    const buffer = Buffer.from(fileBase64, 'base64');
+    
+    // Parse PDF text using pdf-parse
+    const pdfData = await pdf(buffer);
+    const pdfText = pdfData.text;
+    const numPages = pdfData.numpages;
+
+    if (!pdfText || pdfText.trim().length === 0) {
+      return res.status(400).json({ error: "Could not extract any text from the provided PDF." });
+    }
+
+    console.log(`Extracted text from PDF, total pages: ${numPages}`);
+
+    // Clean text and split it into pages/chunks
+    // Since pdf-parse returns pages sequentially, we can split by formfeed \f or approximate page sizes
+    // Let's approximate page splitting based on text indicators or split into standard chunks of ~700 characters
+    // with 150 overlap, and map them to approximate page numbers.
+    const chunks: Chunk[] = [];
+    const textLength = pdfText.length;
+    const chunkSize = 700;
+    const chunkOverlap = 150;
+    
+    // Approximate lines/characters per page to estimate page numbers
+    const charsPerPage = textLength / numPages;
+
+    let index = 0;
+    let chunkIdCounter = 1;
+    while (index < textLength) {
+      let end = index + chunkSize;
+      if (end > textLength) end = textLength;
+      
+      const chunkText = pdfText.substring(index, end).trim();
+      if (chunkText.length > 50) { // skip empty/tiny chunks
+        // Estimate page number
+        const estimatedPage = Math.min(numPages, Math.max(1, Math.ceil((index + end) / 2 / charsPerPage)));
+        
+        chunks.push({
+          id: `chunk-custom-${chunkIdCounter++}`,
+          text: chunkText,
+          pageNumber: estimatedPage,
+          metadata: {
+            source: fileName || "Uploaded Book",
+          }
+        });
+      }
+
+      if (end === textLength) break;
+      index += (chunkSize - chunkOverlap);
+    }
+
+    console.log(`Created ${chunks.length} chunks from PDF text. Embedding them...`);
+
+    // Generate embeddings for custom chunks
+    const chunkTextsForEmbedding = chunks.map(c => `Page ${c.pageNumber}: ${c.text}`);
+    const embeddings = await getEmbeddings(chunkTextsForEmbedding);
+
+    // Attach embeddings to chunks
+    for (let i = 0; i < chunks.length; i++) {
+      chunks[i].embedding = embeddings[i];
+    }
+
+    // Set custom book as active vector store
+    activeVectorStore = chunks;
+    sourceBookName = fileName || "Uploaded PDF";
+    totalPagesCount = numPages;
+
+    res.json({
+      success: true,
+      message: `Successfully ingested and embedded ${chunks.length} chunks from ${numPages} pages.`,
+      bookName: sourceBookName,
+      totalPages: totalPagesCount,
+      chunksCount: chunks.length
+    });
+  } catch (err: any) {
+    console.error("PDF Ingestion Error:", err);
+    res.status(500).json({ error: err.message || "An error occurred while ingesting the PDF." });
+  }
+});
+
+// 4. Ask RAG Chatbot
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, history, topK = 5, temperature = 0.2 } = req.body;
+    if (!message) {
+      return res.status(400).json({ error: "Missing message parameter." });
+    }
+
+    if (activeVectorStore.length === 0) {
+      return res.status(400).json({ error: "No book has been ingested or loaded into the vector database." });
+    }
+
+    console.log(`Answering question: "${message}" (TopK: ${topK}, Temp: ${temperature})`);
+
+    // 1. Embed user query
+    let queryEmbedding: number[] = [];
+    try {
+      const embedResponse = await getEmbeddings([message]);
+      queryEmbedding = embedResponse[0];
+    } catch (err) {
+      console.error("Failed to generate embedding for query:", err);
+      // fallback to dummy vector
+      queryEmbedding = new Array(768).fill(0);
+    }
+
+    // 2. Perform similarity search (cosine similarity)
+    const scoredChunks = activeVectorStore.map(chunk => {
+      let similarity = 0;
+      if (chunk.embedding && queryEmbedding.some(v => v !== 0)) {
+        similarity = cosineSimilarity(chunk.embedding, queryEmbedding);
+      } else {
+        // Fallback: simple keyword overlap if embeddings fail
+        const qWords = new Set(message.toLowerCase().split(/\W+/));
+        const cWords = chunk.text.toLowerCase().split(/\W+/);
+        let matchCount = 0;
+        cWords.forEach(w => { if (qWords.has(w)) matchCount++; });
+        similarity = matchCount / Math.max(1, qWords.size);
+      }
+      return { chunk, similarity };
+    });
+
+    // Sort by similarity descending
+    scoredChunks.sort((a, b) => b.similarity - a.similarity);
+
+    // Get Top K
+    const k = Math.max(0, Math.min(10, topK));
+    const retrieved = scoredChunks.slice(0, k);
+
+    // Format retrieved context for the LLM
+    const contextText = retrieved.map((r, idx) => {
+      const sourceInfo = r.chunk.metadata.chapter ? ` - Chapter: ${r.chunk.metadata.chapter}` : '';
+      return `[Chunk #${idx + 1} - Source: ${r.chunk.metadata.source}${sourceInfo} - Page: ${r.chunk.pageNumber}]\n${r.chunk.text}`;
+    }).join("\n\n-----------------\n\n");
+
+    // 3. Prompt construction with strict RAG constraints
+    const systemPrompt = `You are a professional RAG Chatbot assistant specializing in answering questions ONLY from the book "Rich Dad Poor Dad".
+
+RULES:
+1. Answer the question using ONLY the provided Retrieved Context from the book.
+2. Never make assumptions, invent facts, or use any outside knowledge not present in the Retrieved Context.
+3. If the answer is not available or cannot be fully derived from the Retrieved Context, you must politely respond exactly with:
+   "I couldn't find that information in the provided book."
+   Do not attempt to answer using outside knowledge or write a general summary.
+4. When answering, always clearly attribute your points to the page numbers mentioned in the context (e.g., "According to page 35..." or "...(Page 35)").
+5. Keep your tone objective, professional, and clear. Avoid overly dramatic expressions.`;
+
+    // Format conversation history
+    const formattedHistory = (history || []).map((h: any) => {
+      return `${h.sender === 'user' ? 'User' : 'Assistant'}: ${h.text}`;
+    }).join("\n");
+
+    const userPrompt = `Retrieved Context from "Rich Dad Poor Dad":
+${contextText}
+
+-----------------
+
+Conversation History:
+${formattedHistory}
+
+Current User Question:
+${message}
+
+Provide your detailed RAG response here:`;
+
+    // 4. Call Gemini Flash
+    let answerText = "";
+    try {
+      const ai = getGeminiClient();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: userPrompt,
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: temperature,
+          maxOutputTokens: 1024,
+        }
+      });
+      answerText = response.text || "I couldn't find that information in the provided book.";
+    } catch (err: any) {
+      console.error("Gemini API generation error:", err);
+      // Fallback message
+      answerText = "An error occurred while calling the Gemini API. Please make sure your GEMINI_API_KEY is configured correctly.";
+    }
+
+    // Calculate a confidence score (average of top 3 similarities)
+    const topSimilarities = retrieved.slice(0, 3).map(r => r.similarity);
+    const confidenceScore = topSimilarities.length > 0
+      ? topSimilarities.reduce((a, b) => a + b, 0) / topSimilarities.length
+      : 0;
+
+    // Return response
+    res.json({
+      answer: answerText,
+      sources: retrieved.map(r => ({
+        id: r.chunk.id,
+        text: r.chunk.text,
+        pageNumber: r.chunk.pageNumber,
+        chapter: r.chunk.metadata.chapter || null,
+        source: r.chunk.metadata.source,
+        similarity: r.similarity
+      })),
+      confidenceScore: parseFloat(confidenceScore.toFixed(3))
+    });
+
+  } catch (err: any) {
+    console.error("API Chat Error:", err);
+    res.status(500).json({ error: err.message || "An error occurred while processing your query." });
+  }
+});
+
+// Configure Vite middleware for development or serve built files in production
+async function startServer() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
+startServer();
