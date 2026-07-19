@@ -23,7 +23,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       bookName: 'Rich Dad Poor Dad (Default Edition)',
       totalPages: 188,
       chunksCount: count || 0,
-      embeddingModel: 'text-embedding-004',
+      embeddingModel: 'gemini-embedding-2-preview',
       llmModel: 'gemini-3.5-flash',
       hasApiKey: !!process.env.GEMINI_API_KEY,
     });

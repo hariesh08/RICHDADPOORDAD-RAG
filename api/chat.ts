@@ -37,7 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let queryEmbedding: number[];
     try {
       const embResponse = await ai.models.embedContent({
-        model: 'text-embedding-004',
+        model: 'gemini-embedding-2-preview',
         contents: [message],
       });
       queryEmbedding = embResponse.embeddings?.[0]?.values || new Array(768).fill(0);
